@@ -220,36 +220,21 @@ class RandomWalkGenerator(Generator):
         keys = jax.random.split(key, num=self.num_agents)
 
         # Randomly select action for each agent
-        actions = jax.vmap(self._select_action, in_axes=(0, None, 0))(
-            keys, grid, agents
-        )
+        #actions = jax.vmap(self._select_action, in_axes=(0, None, 0))(
+        #    keys, grid, agents
+        #)
+        _, actions = jax.lax.scan(self._select_action, grid, (keys, agents))
+        
 
         # Step all agents at the same time (separately) and return all of the grids
-        new_agents, grids = jax.vmap(self._step_agent, in_axes=(0, None, 0))(
-            agents, grid, actions
-        )
+        #new_agents, grids = jax.vmap(self._step_agent, in_axes=(0, None, 0))(
+        #    agents, grid, actions
+        #)
 
-        # Get grids with only values related to a single agent.
-        # For example: remove all other agents from agent 1's grid. Do this for all agents.
-        agent_grids = jax.vmap(get_agent_grid)(agent_ids, grids)
-        joined_grid = jnp.max(agent_grids, 0)  # join the grids
+        new_grid, agents = jax.lax.scan(self._step_agent, grid, (agents, actions))
 
-        # Create a correction mask for possible collisions (see the docs of `get_correction_mask`)
-        correction_fn = jax.vmap(get_correction_mask, in_axes=(None, None, 0))
-        correction_masks, collided_agents = correction_fn(grid, joined_grid, agent_ids)
-        correction_mask = jnp.sum(correction_masks, 0)
-
-        # Correct state.agents
-        # Get the correct agents, either old agents (if collision) or new agents if no collision
-        agents = jax.vmap(
-            lambda collided, old_agent, new_agent: jax.lax.cond(
-                collided,
-                lambda: old_agent,
-                lambda: new_agent,
-            )
-        )(collided_agents, agents, new_agents)
         # Create the new grid by fixing old one with correction mask and adding the obstacles
-        return agents, joined_grid + correction_mask
+        return agents, new_grid
 
     def _initialize_agents(
         self, key: chex.PRNGKey, grid: chex.Array
@@ -337,17 +322,18 @@ class RandomWalkGenerator(Generator):
     ) -> chex.Array:
         """Determines if agents can continue taking steps."""
         _, grid, agents = stepping_tuple
-        dones = jax.vmap(self._no_available_cells, in_axes=(None, 0))(grid, agents)
+        #dones = jax.vmap(self._no_available_cells, in_axes=(None, 0))(grid, agents)
+        _, dones = jax.lax.scan(self._no_available_cells, grid, agents)
         return ~dones.all()
 
-    def _no_available_cells(self, grid: chex.Array, agent: Agent) -> chex.Array:
+    def _no_available_cells(self, grid: chex.Array, agent: Agent) -> tuple[chex.Array, chex.Array] :
         """Checks if there are no moves are available for the agent."""
         cell = self._convert_tuple_to_flat_position(agent.position)
-        return (self._available_cells(grid, cell) == -1).all()
+        return grid, (self._available_cells(grid, cell) == -1).all()
 
     def _select_action(
-        self, key: chex.PRNGKey, grid: chex.Array, agent: Agent
-    ) -> chex.Array:
+        self, grid: chex.Array, key_and_agent: Tuple[chex.PRNGKey, Agent]
+    ) -> Tuple[chex.Array, chex.Array]:
         """Selects action for agent to take given its current position.
 
         Args:
@@ -359,6 +345,8 @@ class RandomWalkGenerator(Generator):
             Integer corresponding to the action the agent will take in its next step.
             Action indices match those in connector.constants.
         """
+        key, agent = key_and_agent
+
         cell = self._convert_tuple_to_flat_position(agent.position)
         available_cells = self._available_cells(grid=grid, cell=cell)
         step_coordinate_flat = jax.random.choice(
@@ -370,7 +358,7 @@ class RandomWalkGenerator(Generator):
         )
 
         action = self._action_from_positions(cell, step_coordinate_flat)
-        return action
+        return grid, action
 
     def _convert_flat_position_to_tuple(self, position: chex.Array) -> chex.Array:
         return jnp.array(
@@ -517,10 +505,9 @@ class RandomWalkGenerator(Generator):
 
     def _step_agent(
         self,
-        agent: Agent,
         grid: chex.Array,
-        action: int,
-    ) -> Tuple[Agent, chex.Array]:
+        agent_and_action: Tuple[Agent, int],
+    ) -> Tuple[chex.Array, Agent]:
         """Moves the agent according to the given action if it is possible.
 
         This method is equivalent in function to _step_agent from 'Connector' environment.
@@ -528,6 +515,8 @@ class RandomWalkGenerator(Generator):
         Returns:
             Tuple of (agent, grid) after having applied the given action.
         """
+        agent, action = agent_and_action
+
         new_pos = move_position(agent.position, action)
 
         new_agent, new_grid = jax.lax.cond(
@@ -538,7 +527,7 @@ class RandomWalkGenerator(Generator):
             grid,
             new_pos,
         )
-        return new_agent, new_grid
+        return new_grid, new_agent
 
     def _is_valid_position(
         self,

@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from functools import cached_property
 from typing import Dict, Optional, Sequence, Tuple
 
 import chex
@@ -40,14 +41,13 @@ from jumanji.environments.routing.connector.utils import (
     is_valid_position,
     move_agent,
     move_position,
-    switch_perspective,
 )
 from jumanji.environments.routing.connector.viewer import ConnectorViewer
 from jumanji.types import TimeStep, restart, termination, transition
 from jumanji.viewer import Viewer
 
 
-class MaConnector(Environment[State]):
+class Connector(Environment[State]):
     """The `Connector` environment is a gridworld problem where multiple pairs of points (sets)
     must be connected without overlapping the paths taken by any other set. This is achieved
     by allowing certain points to move to an adjacent cell at each step. However, each time a
@@ -70,9 +70,9 @@ class MaConnector(Environment[State]):
         - can take the values [0,1,2,3,4] which correspond to [No Op, Up, Right, Down, Left].
         - each value in the array corresponds to an agent's action.
 
-    - reward: jax array (float) of shape (num_agents,):
-        - dense: for each agent a reward is 1 if connected on that step. Additionally,
-            a penalty reward of -0.03 is given for each step the agent is not connected.
+    - reward: jax array (float) of shape ():
+        - dense: reward is 1 for each successful connection on that step. Additionally,
+            each pair of points that have not connected receives a penalty reward of -0.03.
 
     - episode termination:
         - all agents either can't move (no available actions) or have connected to their target.
@@ -89,7 +89,7 @@ class MaConnector(Environment[State]):
     key = jax.random.PRNGKey(0)
     state, timestep = jax.jit(env.reset)(key)
     env.render(state)
-    action = env.action_spec().generate_value()
+    action = env.action_specc.generate_value()
     state, timestep = jax.jit(env.step)(state, action)
     env.render(state)
     ```
@@ -119,6 +119,7 @@ class MaConnector(Environment[State]):
         self.time_limit = time_limit
         self.num_agents = self._generator.num_agents
         self.grid_size = self._generator.grid_size
+        super().__init__()
         self._agent_ids = jnp.arange(self.num_agents)
         self._viewer = viewer or ConnectorViewer(
             "Connector", self.num_agents, render_mode="human"
@@ -135,12 +136,18 @@ class MaConnector(Environment[State]):
             timestep: `TimeStep` object corresponding to the initial environment timestep.
         """
         state = self._generator(key)
-        observation = self._obs_from_state(state)
-        extras = self._get_extras(state)
-        timestep = restart(
-            observation=observation, extras=extras, shape=(self.num_agents,)
-        )
 
+        #action_mask = jax.vmap(self._get_action_mask, (0, None))(
+        #    state.agents, state.grid
+        #)
+        _, action_mask = jax.lax.scan(self._get_action_mask, state.grid, state.agents)
+        observation = Observation(
+            grid=state.grid,
+            action_mask=action_mask,
+            step_count=state.step_count,
+        )
+        extras = self._get_extras(state)
+        timestep = restart(observation=observation, extras=extras)
         return state, timestep
 
     def step(
@@ -168,29 +175,30 @@ class MaConnector(Environment[State]):
 
         # Construct timestep: get reward, legal actions and done
         reward = self._reward_fn(state, action, new_state)
-        observation = self._obs_from_state(new_state)
-        done = jax.vmap(connected_or_blocked)(agents, observation.action_mask)
-        discount = (1 - done).astype(float)
-        extras = self._get_extras(new_state)
+        #action_mask = jax.vmap(self._get_action_mask, (0, None))(agents, grid)
+        _, action_mask = jax.lax.scan(self._get_action_mask, grid, agents)
+        observation = Observation(
+            grid=grid, action_mask=action_mask, step_count=new_state.step_count
+        )
 
+        done = jnp.all(jax.vmap(connected_or_blocked)(agents, action_mask))
+        extras = self._get_extras(new_state)
         timestep = jax.lax.cond(
-            jnp.all(done) | (new_state.step_count >= self.time_limit),
+            done | (new_state.step_count >= self.time_limit),
             lambda: termination(
                 reward=reward,
                 observation=observation,
                 extras=extras,
-                shape=(self.num_agents,),
             ),
             lambda: transition(
                 reward=reward,
                 observation=observation,
                 extras=extras,
-                discount=discount,
-                shape=(self.num_agents,),
             ),
         )
 
         return new_state, timestep
+    
 
     def _step_agents(
         self, state: State, action: chex.Array
@@ -204,42 +212,24 @@ class MaConnector(Environment[State]):
         """
         agent_ids = jnp.arange(self.num_agents)
         # Step all agents at the same time (separately) and return all of the grids
-        agents, grids = jax.vmap(self._step_agent, in_axes=(0, None, 0))(
-            state.agents, state.grid, action
-        )
+        #agents, grids = jax.vmap(self._step_agent, in_axes=(0, None, 0))(
+        #    state.agents, state.grid, action
+        #)
+        grid, agents = jax.lax.scan(self._step_agent, state.grid, (state.agents, action))
 
-        # Get grids with only values related to a single agent.
-        # For example: remove all other agents from agent 1's grid. Do this for all agents.
-        agent_grids = jax.vmap(get_agent_grid)(agent_ids, grids)
-        joined_grid = jnp.max(agent_grids, 0)  # join the grids
-
-        # Create a correction mask for possible collisions (see the docs of `get_correction_mask`)
-        correction_fn = jax.vmap(get_correction_mask, in_axes=(None, None, 0))
-        correction_masks, collided_agents = correction_fn(
-            state.grid, joined_grid, agent_ids
-        )
-        correction_mask = jnp.sum(correction_masks, 0)
-
-        # Correct state.agents
-        # Get the correct agents, either old agents (if collision) or new agents if no collision
-        agents = jax.vmap(
-            lambda collided, old_agent, new_agent: jax.lax.cond(
-                collided,
-                lambda: old_agent,
-                lambda: new_agent,
-            )
-        )(collided_agents, state.agents, agents)
         # Create the new grid by fixing old one with correction mask and adding the obstacles
-        return agents, joined_grid + correction_mask
+        return agents, grid
 
     def _step_agent(
-        self, agent: Agent, grid: chex.Array, action: chex.Numeric
-    ) -> Tuple[Agent, chex.Array]:
+        #self, agent: Agent, grid: chex.Array, action: chex.Numeric
+        self, grid: chex.Array, agent_and_action: Tuple[Agent, chex.Numeric]
+    ) -> Tuple[chex.Array, Tuple[Agent, chex.Array]]:
         """Moves the agent according to the given action if it is possible.
 
         Returns:
             Tuple: (agent, grid) after having applied the given action.
         """
+        agent, action = agent_and_action
         new_pos = move_position(agent.position, action)
 
         new_agent, new_grid = jax.lax.cond(
@@ -251,24 +241,9 @@ class MaConnector(Environment[State]):
             new_pos,
         )
 
-        return new_agent, new_grid
+        return new_grid, new_agent
 
-    def _obs_from_state(self, state: State) -> Observation:
-        """Generates the observation from the state."""
-        action_mask = jax.vmap(self._get_action_mask, (0, None))(
-            state.agents, state.grid
-        )
-        grid = jax.vmap(switch_perspective, (None, 0, None))(
-            state.grid, self._agent_ids, self.num_agents
-        )
-
-        return Observation(
-            grid=grid,
-            action_mask=action_mask,
-            step_count=state.step_count,
-        )
-
-    def _get_action_mask(self, agent: Agent, grid: chex.Array) -> chex.Array:
+    def _get_action_mask(self, grid: chex.Array, agent: Agent) -> Tuple[chex.Array, chex.Array]:
         """Gets an agent's action mask."""
         # Don't check action 0 because no-op is always valid
         actions = jnp.arange(1, 5)
@@ -279,7 +254,7 @@ class MaConnector(Environment[State]):
 
         mask = jnp.ones(5, dtype=bool)
         mask = mask.at[actions].set(jax.vmap(is_valid_action)(actions))
-        return mask
+        return grid, mask
 
     def _get_extras(self, state: State) -> Dict:
         """Computes extras metrics to be return within the timestep."""
@@ -381,53 +356,4 @@ class MaConnector(Environment[State]):
             num_values=jnp.array([5] * self.num_agents),
             dtype=jnp.int32,
             name="action",
-        )
-
-    def reward_spec(self) -> specs.Array:
-        """Returns: a reward per agent."""
-        return specs.Array(shape=(self.num_agents,), dtype=float, name="reward")
-
-    def discount_spec(self) -> specs.BoundedArray:
-        """Returns: discount per agent."""
-        return specs.BoundedArray(
-            shape=(self.num_agents,),
-            dtype=float,
-            minimum=0.0,
-            maximum=1.0,
-            name="discount",
-        )
-
-
-class Connector(MaConnector):
-    def multi_to_single_agent_timestep(
-        self, timestep: TimeStep[Observation]
-    ) -> TimeStep[Observation]:
-        """Converts a multi-agent timestep to a single-agent timestep."""
-        grid = timestep.observation.grid[0]
-        observation = timestep.observation._replace(grid=grid)
-
-        return timestep.replace(  # type: ignore
-            observation=observation,
-            reward=jnp.sum(timestep.reward),
-            discount=jnp.all(timestep.discount).astype(float),
-        )
-
-    def reset(self, key: chex.PRNGKey) -> Tuple[State, TimeStep[Observation]]:
-        state, timestep = super().reset(key)
-        return state, self.multi_to_single_agent_timestep(timestep)
-
-    def step(
-        self, state: State, action: chex.Array
-    ) -> Tuple[State, TimeStep[Observation]]:
-        state, timestep = super().step(state, action)
-        return state, self.multi_to_single_agent_timestep(timestep)
-
-    def reward_spec(self) -> specs.Array:
-        """Returns: a single reward, summed for all agents."""
-        return specs.Array(shape=(), dtype=float, name="reward")
-
-    def discount_spec(self) -> specs.BoundedArray:
-        """Returns: a single discount, one for all agents."""
-        return specs.BoundedArray(
-            shape=(), dtype=float, minimum=0.0, maximum=1.0, name="discount"
         )
