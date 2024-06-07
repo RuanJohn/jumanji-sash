@@ -53,6 +53,9 @@ class RandomGenerator(Generator):
             num_rows=num_rows, num_cols=num_cols, num_agents=num_agents
         )
 
+    def _unflatten_index(self, index, r, c):
+        return jnp.asarray((index // r, index % c)).T
+
     def __call__(self, key: chex.PRNGKey) -> State:
         """Generate a random instance of the cleaner environment.
 
@@ -67,18 +70,20 @@ class RandomGenerator(Generator):
         Returns:
             state: the generated state.
         """
-        generator_key, state_key = jax.random.split(key)
+        maze_key, agent_key, state_key = jax.random.split(key, 3)
         maze = maze_generation.generate_maze(
-            self.num_cols, self.num_rows, generator_key
+            self.num_cols, self.num_rows, maze_key
         )
 
         grid = self._adapt_values(maze)
 
-        # Agents start in upper left corner
-        agents_locations = jnp.zeros((self.num_agents, 2), int)
+        # Agents start in random open spaces
+        open_spaces = jnp.where(grid.flatten() == DIRTY, True, False)
+        agents_locations = jax.random.choice(agent_key, jnp.arange(grid.size), (self.num_agents,), p = open_spaces)
+        agents_locations = self._unflatten_index(agents_locations, self.num_rows, self.num_cols)
 
-        # Clean the tile in upper left corner
-        grid = grid.at[0, 0].set(CLEAN)
+        # Clean the the tiles occupied by agaents
+        grid = grid.at[agents_locations[:, 0], agents_locations[:, 1]].set(CLEAN)
 
         return State(
             grid=grid,

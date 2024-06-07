@@ -167,8 +167,8 @@ class Cleaner(Environment[State]):
     def reset(self, key: chex.PRNGKey) -> Tuple[State, TimeStep[Observation]]:
         """Reset the environment to its initial state.
 
-        All the tiles except upper left are dirty, and the agents start in the upper left
-        corner of the grid.
+        All the unoccupied tiles are dirty, and the agents start in random open spaces
+        on the grid.
 
         Args:
             key: random key used to reset the environment.
@@ -178,13 +178,11 @@ class Cleaner(Environment[State]):
             timestep: `TimeStep` object corresponding to the first timestep returned by the
                 environment after a reset.
         """
-        # Agents start in upper left corner
-        agents_locations = jnp.zeros((self.num_agents, 2), int)
 
         state = self.generator(key)
 
         # Create the action mask and update the state
-        state.action_mask = self._compute_action_mask(state.grid, agents_locations)
+        state.action_mask = self._compute_action_mask(state.grid, state.agents_locations)
 
         observation = self._observation_from_state(state)
 
