@@ -363,7 +363,13 @@ class Cleaner(Environment[State]):
         self, grid: chex.Array, agents_locations: chex.Array
     ) -> chex.Array:
         """Clean all tiles containing an agent."""
-        return grid.at[agents_locations[:, 0], agents_locations[:, 1]].set(CLEAN)
+        def clean_tile(grid, location):
+            return grid.at[location].set(CLEAN), None
+        
+        grid, _ = jax.lax.scan(clean_tile, grid, agents_locations)
+        return grid
+        #return grid.at[agents_locations[:, 0], agents_locations[:, 1]].set(CLEAN)
+    
 
     def _should_terminate(self, state: State, valid_actions: chex.Array) -> chex.Array:
         """Whether the episode should terminate from a given state.
