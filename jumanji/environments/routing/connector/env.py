@@ -147,7 +147,7 @@ class Connector(Environment[State]):
             step_count=state.step_count,
         )
         extras = self._get_extras(state)
-        timestep = restart(observation=observation, extras=extras)
+        timestep = restart(observation=observation, extras=extras, shape=self.num_agents)
         return state, timestep
 
     def step(
@@ -181,7 +181,8 @@ class Connector(Environment[State]):
             grid=grid, action_mask=action_mask, step_count=new_state.step_count
         )
 
-        done = jnp.all(jax.vmap(connected_or_blocked)(agents, action_mask))
+        dones = jax.vmap(connected_or_blocked)(agents, action_mask)
+        done = jnp.all(dones)
         extras = self._get_extras(new_state)
         timestep = jax.lax.cond(
             done | (new_state.step_count >= self.time_limit),
@@ -189,10 +190,12 @@ class Connector(Environment[State]):
                 reward=reward,
                 observation=observation,
                 extras=extras,
+                shape=self.num_agents,
             ),
             lambda: transition(
                 reward=reward,
                 observation=observation,
+                discount = 1.0 - dones,
                 extras=extras,
             ),
         )
