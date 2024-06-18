@@ -38,6 +38,7 @@ class Generator(abc.ABC):
         num_agents: int,
         sensor_range: int,
         request_queue_size: int,
+        highway_width: int
     ) -> None:
         """Initializes a robot_warehouse generator, used to generate grids for
         the RobotWarehouse environment.
@@ -69,9 +70,11 @@ class Generator(abc.ABC):
         self._sensor_range = sensor_range
         self._request_queue_size = request_queue_size
 
+        self._highway_width = highway_width
+
         self._grid_size = (
-            (column_height + 1) * shelf_rows + 2,
-            (2 + 1) * shelf_columns + 1,
+            (column_height + self._highway_width) * shelf_rows + self._highway_width // 2 + 2,
+            (2 + self._highway_width) * shelf_columns + 1,
         )
         self._agent_ids = jnp.arange(num_agents)
 
@@ -147,6 +150,7 @@ class GeneratorBase(Generator):
         num_agents: int,
         sensor_range: int,
         request_queue_size: int,
+        highway_width: int
     ) -> None:
         """Initializes a robot_warehouse generator."""
         super().__init__(
@@ -156,6 +160,7 @@ class GeneratorBase(Generator):
             num_agents,
             sensor_range,
             request_queue_size,
+            highway_width
         )
         self._make_warehouse()
 
@@ -176,12 +181,22 @@ class GeneratorBase(Generator):
             ]
         )
         # calculate "highways" (these are open spaces/cells between shelves)
+        v_gap = self._highway_width + 2
+        h_gap = self._highway_width + self.column_height
+        
         highway_func: Callable[[int, int], bool] = lambda x, y: (
-            (y % 3 == 0)  # vertical highways
-            | (x % (self.column_height + 1) == 0)  # horizontal highways
+            #(y % 3 == 0)  # vertical highways
+            (y % v_gap <= self._highway_width // 2)
+            | (y % v_gap >= (v_gap - self._highway_width // 2))
+
+            #| (x % (self.column_height + 1) == 0)  # horizontal highways
+            | (x % h_gap <= self._highway_width // 2)
+            | (x % h_gap >= (h_gap - self._highway_width // 2))
+
             | (x == self._grid_size[0] - 1)  # delivery row
+
             | (  # remove middle cluster to allow agents to queue in front of goals
-                (x > self._grid_size[0] - (self.column_height + 3))
+                (x >= self._grid_size[0] - (self.column_height + self._highway_width + 1)) #unsure
                 & ((y == self._grid_size[1] // 2 - 1) | (y == self._grid_size[1] // 2))
             )
         )
@@ -226,6 +241,7 @@ class RandomGenerator(GeneratorBase):
         num_agents: int,
         sensor_range: int,
         request_queue_size: int,
+        highway_width: int
     ) -> None:
         """Initialises an robot_warehouse generator, used to generate grids for
         the RobotWarehouse environment."""
@@ -236,6 +252,7 @@ class RandomGenerator(GeneratorBase):
             num_agents,
             sensor_range,
             request_queue_size,
+            highway_width
         )
 
     def __call__(self, key: chex.PRNGKey) -> State:
