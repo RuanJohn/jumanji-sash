@@ -266,10 +266,10 @@ class RobotWarehouse(Environment[State]):
         )
 
         # check for agent collisions
-        collisions = jax.vmap(functools.partial(utils.is_collision, grid))(
-            agents, self.agent_ids
-        )
-        collision = jnp.any(collisions)
+        #collisions = jax.vmap(functools.partial(utils.is_collision, grid))(
+        #    agents, self.agent_ids
+        #
+        #collision = jnp.any(collisions)
 
         # compute shared reward for all agents and update request queue
         # if a requested shelf has been successfully delivered to the goal
@@ -305,7 +305,8 @@ class RobotWarehouse(Environment[State]):
         # construct timestep and check environment termination
         steps = state.step_count + 1
         horizon_reached = steps >= self.time_limit
-        done = collision | horizon_reached
+        #done = collision | horizon_reached
+        done = horizon_reached
 
         # compute next observation
         agents_view = self._make_observations(grid, agents, shelves)

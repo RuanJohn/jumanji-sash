@@ -93,7 +93,12 @@ def get_new_position_after_forward(
     new_position: Position = jax.lax.switch(
         agent_direction, [move_up, move_right, move_down, move_left], x, y
     )
-    return new_position
+    
+    agent_id_on_grid = grid[_AGENTS, new_position.x, new_position.y]
+    return jax.lax.select(agent_id_on_grid == 0,
+                            new_position,
+                            agent_position
+    )
 
 
 def get_agent_view(
