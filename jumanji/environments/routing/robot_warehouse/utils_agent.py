@@ -70,7 +70,7 @@ def get_new_direction_after_turn(
 
 def get_new_position_after_forward(
     grid: chex.Array, agent_position: chex.Array, agent_direction: chex.Array
-) -> Position:
+):
     """Get the correct position the agent will be in after moving forward
     in its current direction. E.g. if the agent is facing LEFT and turns
     RIGHT it should stay in the same position. If instead it moves FORWARD
@@ -95,11 +95,11 @@ def get_new_position_after_forward(
     )
     
     agent_id_on_grid = grid[_AGENTS, new_position.x, new_position.y]
-    return jax.lax.select(agent_id_on_grid,
-                            agent_position,
+    final_position = jax.lax.select(agent_id_on_grid == 0,
                             new_position,
-                            
+                            agent_position
     )
+    return final_position
 
 
 def get_agent_view(
