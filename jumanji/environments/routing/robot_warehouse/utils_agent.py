@@ -95,9 +95,10 @@ def get_new_position_after_forward(
     )
     
     agent_id_on_grid = grid[_AGENTS, new_position.x, new_position.y]
-    return jax.lax.select(agent_id_on_grid == 0,
+    return jax.lax.select(agent_id_on_grid,
+                            agent_position,
                             new_position,
-                            agent_position
+                            
     )
 
 
