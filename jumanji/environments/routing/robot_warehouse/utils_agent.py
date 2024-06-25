@@ -93,13 +93,7 @@ def get_new_position_after_forward(
     new_position: Position = jax.lax.switch(
         agent_direction, [move_up, move_right, move_down, move_left], x, y
     )
-    
-    agent_id_on_grid = grid[_AGENTS, new_position.x, new_position.y]
-    return jax.lax.select(agent_id_on_grid == 0,
-                          new_position,
-                          agent_position,
-    )
-
+    return new_position
 
 def get_agent_view(
     grid: chex.Array, agent: chex.Array, sensor_range: chex.Array
@@ -283,7 +277,12 @@ def set_new_position_after_forward(
     agent = tree_slice(agents, agent_id)
     current_position = agent.position
     new_position = get_new_position_after_forward(grid, agent.position, agent.direction)
-    agents = update_agent(agents, agent_id, "position", new_position)
+
+    agent_id_on_grid = grid[_AGENTS, new_position.x, new_position.y]
+    get_new = lambda new, old: new
+    get_old = lambda new, old: old
+    checked_position = jax.lax.cond(agent_id_on_grid == 0, get_new, get_old, new_position, current_position)
+    agents = update_agent(agents, agent_id, "position", checked_position)
 
     # update agent grid placement
     grid = grid.at[_AGENTS, current_position.x, current_position.y].set(0)
